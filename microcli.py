@@ -5,9 +5,7 @@ import sys
 import os
 from functools import wraps
 import types
-# needed for tests
 import unittest
-from mock import patch
 
 USAGE = "Usage: fibi [options] command [command args]"
 EXAMPLES = """Examples:
@@ -46,8 +44,9 @@ class MicroCLI(object):
         if addnewline:
             self.stdout.write("\n")
 
-    def read_options(self, arguments=None):
-        (options, args) = self.parser.parse_args(arguments or sys.argv[1:])
+    def read_options(self):
+        import pdb;pdb.set_trace()
+        (options, args) = self.parser.parse_args(self.argv)
         self.options = options
         if len(args) < 1:
             return ["help"]
@@ -72,14 +71,15 @@ class MicroCLI(object):
         # note: the first argument for a command function is self.
         return inspect.getargspec(get_undecorated_function(fun)).args[1:]
 
-    def main(self):
-        arguments = self.read_options()
-        command_name = arguments[0]
+    def main(self, argv=None):
+        self.argv = argv or sys.argv
+        self.parsed_args = self.read_options()
+        command_name = self.argv[0]
         command_fun = getattr(self, command_name, self.help)
         named_args = self.get_arg_names(command_fun)
-        command_args = arguments[1:]
+        command_args = self.parsed_args[1:]
         if len(command_args) != len(named_args):
-            self.write("Expected %s arguments, got %s")
+            self.write("Expected %s arguments, got %s" % (len(command_args), len(named_args)))
             self.write("Expected arguments: %s" % ", ".join(named_args))
         try:
             result = command_fun(*command_args)
@@ -92,13 +92,20 @@ class MicroCLI(object):
 
 class MicroCLITestCase(unittest.TestCase):
 
+    def setUp(self):
+        super(MicroCLITestCase, self).setUp()
+        # doing import here so mock is not a dependency for regular use
+        from mock import patch
+        self.patch = patch
+
     def test_command(self):
         RETVAL = 15
         class T(MicroCLI):
             @command
             def f(self):
                 return RETVAL
-        with patch("sys.exit") as mock_exit:
+        with self.patch("sys.exit") as mock_exit:
+            T().main(["command_name", "f"])
             mock_exit.assert_called_with(RETVAL)
 
 
