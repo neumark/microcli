@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from argparse import ArgumentParser
+from optparse import (OptionParser,BadOptionError,AmbiguousOptionError)
 import inspect
 import sys
 import os
@@ -12,6 +12,45 @@ EXAMPLES = """Examples:
     TODO
 """
 COMMAND_ATTR = "_command"
+
+# from http://stackoverflow.com/questions/1885161/how-can-i-get-optparses-optionparser-to-ignore-invalid-options
+class PassThroughOptionParser(OptionParser):
+    """
+    An unknown option pass-through implementation of OptionParser.
+
+    When unknown arguments are encountered, bundle with largs and try again,
+    until rargs is depleted.  
+
+    sys.exit(status) will still be called if a known argument is passed
+    incorrectly (e.g. missing arguments or bad argument types, etc.)        
+    """
+    def _process_args(self, largs, rargs, values):
+        while rargs:
+            try:
+                OptionParser._process_args(self,largs,rargs,values)
+            except (BadOptionError,AmbiguousOptionError), e:
+                largs.append(e.opt_str)
+
+class CommandDefinition(object):
+
+    def __init__(self,
+            name,
+            opt_parser,
+            arg_names,
+            fun,
+            doc=None):
+        self.name = name
+        self.opt_parser = opt_parser
+        self.arg_names = arg_names
+        self.fun = fun
+        self.doc = doc
+
+    def run(self, cli, args):
+        if len(args) != len(self.arg_names):
+            cli.write("Expected %s arguments, got %s" % (len(self.arg_names), len(args)))
+            cli.write("Expected arguments: %s" % ", ".join(self.arg_names))
+        return self.fun(cli, *args)
+
 
 def command(func):
     @wraps(func)
@@ -33,24 +72,91 @@ def get_undecorated_function(func):
         func = candidates[0]
     return func
 
+
 class MicroCLI(object):
 
-    def __init__(self):
-        self.parser = ArgumentParser()
+    def __init__(self, argv=None):
+        self.argv = argv if argv is not None else sys.argv[1:]
+        self.global_optparser = PassThroughOptionParser()
         self.stdout = sys.stdout
+        self.default_command = "help"
+        self.command_definitions = self.get_all_command_definitions()
 
     def write(self, msg, addnewline=True):
-        self.stdout.write(msg)
+        self.stdout.write(str(msg))
         if addnewline:
             self.stdout.write("\n")
 
-    def read_options(self):
-        import pdb;pdb.set_trace()
-        (options, args) = self.parser.parse_args(self.argv)
-        self.options = options
+    def read_global_options(self):
+        self.global_options, args = self.global_optparser.parse_args(self.argv)
         if len(args) < 1:
-            return ["help"]
+            return [self.default_command]
         return args
+
+    @classmethod
+    def add_parser_option(cls, parser, arg_name, default_value):
+        action = "store"
+        arg_type = None
+        bool_actions = {
+            True: 'store_false',
+            False: 'store_true'}
+        if type(default_value) in [str, unicode]:
+            arg_type="str"
+        elif type(default_value) == bool:
+            action = bool_actions[default_value]
+        elif type(default_value) in [float, int]:
+            arg_type=type(default_value).__name__
+        add_option_kwargs = {
+            'action': action,
+            'dest': arg_name,
+            'default': default_value}
+        if arg_type is not None:
+            add_option_kwargs['type'] = arg_type
+        parser.add_option('--%s' % arg_name, **add_option_kwargs)
+
+    @classmethod
+    def get_command_definition(cls, cmd_name, cmd_fun):
+        #def f1(a0, a1, kw0="a", *args, **kwargs):
+        #ArgSpec(args=['a0', 'a1', 'kw0'], varargs='args', keywords='kwargs', defaults=('a',))
+        # get positional arguments
+        argspec = inspect.getargspec(get_undecorated_function(cmd_fun))
+        # note: the first argument for a command method is self.
+        arg_names = argspec.args[1:]
+        defaults = argspec.defaults or []
+        padded_defaults = [None] * (len(arg_names) - len(defaults)) + list(defaults)
+        args_with_defaults = zip(arg_names, defaults)
+        parser = OptionParser()
+        for arg_name, default_value in args_with_defaults:
+            if default_value is not None:
+                self.add_parser_options(parser, arg_name, default_value)
+        return CommandDefinition(
+                cmd_name,
+                parser,
+                [a for a,d in args_with_defaults if d is None],
+                cmd_fun,
+                cls.get_command_description(cmd_fun))
+
+
+    @classmethod
+    def get_commands(cls):
+        command_dict = {}
+        for i in dir(cls):
+            cmd = getattr(cls, i)
+            if getattr(cmd, COMMAND_ATTR, None) is not None:
+                command_dict[i] = cmd
+        return command_dict
+
+    @classmethod
+    def get_command_description(cls, cmd_fun):
+        return getattr(cmd_fun, '__doc__', None)
+
+    @classmethod
+    def get_all_command_definitions(cls):
+        command_definition = {}
+        for cmd_name, cmd_fun in cls.get_commands().iteritems():
+            cmd_def = cls.get_command_definition(cmd_name, cmd_fun)
+            command_definition[cmd_name] = cmd_def
+        return command_definition
 
     @command
     def help(self, *args, **kwargs):
@@ -67,22 +173,21 @@ class MicroCLI(object):
         self.write("\n" + EXAMPLES)
 
     @classmethod
-    def get_arg_names(cls, fun):
-        # note: the first argument for a command function is self.
-        return inspect.getargspec(get_undecorated_function(fun)).args[1:]
+    def main(cls, argv=None):
+        cli = cls(argv)
+        cli.run()
 
-    def main(self, argv=None):
-        self.argv = argv or sys.argv
-        self.parsed_args = self.read_options()
-        command_name = self.argv[0]
-        command_fun = getattr(self, command_name, self.help)
-        named_args = self.get_arg_names(command_fun)
-        command_args = self.parsed_args[1:]
-        if len(command_args) != len(named_args):
-            self.write("Expected %s arguments, got %s" % (len(command_args), len(named_args)))
-            self.write("Expected arguments: %s" % ", ".join(named_args))
+    def run(self):
+        self.arg_list = self.read_global_options()
+        command_name = self.arg_list[0] if self.arg_list else None
+        if command_name in self.command_definitions:
+            command_def = self.command_definitions[command_name]
+        else:
+            command_def = self.command_definitions[self.default_command]
+        command_args = self.arg_list[1:]
+        result = None
         try:
-            result = command_fun(*command_args)
+            result = command_def.run(self, command_args)
         except Exception, e:
             self.write(str(e))
             sys.exit(1)
@@ -105,7 +210,7 @@ class MicroCLITestCase(unittest.TestCase):
             def f(self):
                 return RETVAL
         with self.patch("sys.exit") as mock_exit:
-            T().main(["command_name", "f"])
+            T().main(["f"])
             mock_exit.assert_called_with(RETVAL)
 
 
