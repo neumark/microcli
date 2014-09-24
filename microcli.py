@@ -45,11 +45,16 @@ class CommandDefinition(object):
         self.fun = fun
         self.doc = doc
 
-    def run(self, cli, args):
+    def arg_check(self, cli, args):
         if len(args) != len(self.arg_names):
             cli.write("Expected %s arguments, got %s" % (len(self.arg_names), len(args)))
             cli.write("Expected arguments: %s" % ", ".join(self.arg_names))
-        return self.fun(cli, *args)
+            sys.exit(1)
+
+    def run(self, cli, args):
+        kwargs, parsed_args = self.opt_parser.parse_args(args)
+        self.arg_check(cli, parsed_args)
+        return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
 
 
 def command(func):
@@ -71,6 +76,9 @@ def get_undecorated_function(func):
             break
         func = candidates[0]
     return func
+
+def values_to_dict(values):
+    return values.__dict__
 
 
 class MicroCLI(object):
@@ -94,6 +102,10 @@ class MicroCLI(object):
         return args
 
     @classmethod
+    def kwarg_name_to_option_name(cls, kwarg_name):
+        return kwarg_name.replace("_", "-")
+
+    @classmethod
     def add_parser_option(cls, parser, arg_name, default_value):
         action = "store"
         arg_type = None
@@ -112,7 +124,7 @@ class MicroCLI(object):
             'default': default_value}
         if arg_type is not None:
             add_option_kwargs['type'] = arg_type
-        parser.add_option('--%s' % arg_name, **add_option_kwargs)
+        parser.add_option('--%s' % cls.kwarg_name_to_option_name(arg_name), **add_option_kwargs)
 
     @classmethod
     def get_command_definition(cls, cmd_name, cmd_fun):
@@ -124,11 +136,11 @@ class MicroCLI(object):
         arg_names = argspec.args[1:]
         defaults = argspec.defaults or []
         padded_defaults = [None] * (len(arg_names) - len(defaults)) + list(defaults)
-        args_with_defaults = zip(arg_names, defaults)
+        args_with_defaults = zip(arg_names, padded_defaults)
         parser = OptionParser()
         for arg_name, default_value in args_with_defaults:
             if default_value is not None:
-                self.add_parser_options(parser, arg_name, default_value)
+                cls.add_parser_option(parser, arg_name, default_value)
         return CommandDefinition(
                 cmd_name,
                 parser,
@@ -161,16 +173,7 @@ class MicroCLI(object):
     @command
     def help(self, *args, **kwargs):
         """ Print usage """
-        self.parser.print_help()
-        self.write("Commands:")
-        for i in dir(self.__class__):
-            cmd = getattr(self, i)
-            if i[0] != "_" and getattr(cmd, COMMAND_ATTR, None) is not None:
-                arg_names = ", ".join(self.get_arg_names(cmd))
-                if arg_names:
-                    arg_names = "(%s)" % arg_names
-                self.write("* %s%s\n    %s" % (i, arg_names, getattr(cmd, '__doc__', '(no docstring for function)')))
-        self.write("\n" + EXAMPLES)
+        pass
 
     @classmethod
     def main(cls, argv=None):
@@ -189,29 +192,68 @@ class MicroCLI(object):
         try:
             result = command_def.run(self, command_args)
         except Exception, e:
-            self.write(str(e))
+            self.write("Error: %s" % str(e))
             sys.exit(1)
-        if result is not None:
+        if type(result) in [str, unicode]:
             self.write(result)
         sys.exit(result if type(result) == int else 0)
 
 class MicroCLITestCase(unittest.TestCase):
 
+    RETVAL = 15
+
+    class T(MicroCLI):
+        @command  # simple command: no parameters
+        def f1(self):
+            return MicroCLITestCase.RETVAL
+        @command  # a command with only positional arguments
+        def f2(self, a):
+            return a
+        @command  # a command with only keyword arguments
+        def f3(self, awesome_option="asdf"):
+            return len(awesome_option)
+
+    def __init__(self, *args, **kwargs):
+        super(MicroCLITestCase, self).__init__(*args, **kwargs)
+        # doing import here so mock is not a dependency for regular use
+        try:
+            from mock import patch
+            self.patch = patch
+        except ImportError:
+            print "Missing dependency for test: mock"
+            sys.exit(1)
+
     def setUp(self):
         super(MicroCLITestCase, self).setUp()
-        # doing import here so mock is not a dependency for regular use
-        from mock import patch
-        self.patch = patch
 
-    def test_command(self):
-        RETVAL = 15
-        class T(MicroCLI):
-            @command
-            def f(self):
-                return RETVAL
+    def test_command_noargs(self):
+        """exit value is what the command returns if its an int"""
         with self.patch("sys.exit") as mock_exit:
-            T().main(["f"])
-            mock_exit.assert_called_with(RETVAL)
+            self.T.main(["f1"])
+            mock_exit.assert_called_with(MicroCLITestCase.RETVAL)
+
+    def test_print_returned_string(self):
+        """if the command returns a string it is printed"""
+        from StringIO import StringIO
+        with self.patch("sys.exit") as mock_exit:
+            stdout = StringIO()
+            cli = MicroCLITestCase.T("f2 asdf".split())
+            cli.stdout = stdout
+            cli.run()
+            self.assertEquals(stdout.getvalue(), "asdf\n")
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_kwargs_are_optional(self):
+        """kwarg values always have defaults"""
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("f3".split()).run()
+            # kwargs are optional
+            mock_exit.assert_called_with(4)
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("f3 --awesome-option 1".split()).run()
+            # but they are honored
+            mock_exit.assert_called_with(1)
 
 
 def suite():
