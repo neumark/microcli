@@ -52,9 +52,14 @@ class CommandDefinition(object):
             sys.exit(1)
 
     def run(self, cli, args):
-        kwargs, parsed_args = self.opt_parser.parse_args(args)
-        self.arg_check(cli, parsed_args)
-        return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
+        try:
+            kwargs, parsed_args = self.opt_parser.parse_args(args)
+        except UnboundLocalError, e:
+            cli.write("Error parsing command arguments")
+            return 1 #  same as sys.exit(1)
+        else:
+            self.arg_check(cli, parsed_args)
+            return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
 
 
 def command(func):
@@ -96,7 +101,8 @@ class MicroCLI(object):
             self.stdout.write("\n")
 
     def read_global_options(self):
-        self.global_options, args = self.global_optparser.parse_args(self.argv)
+        global_options, args = self.global_optparser.parse_args(self.argv)
+        self.global_options = global_options.__dict__
         if len(args) < 1:
             return [self.default_command]
         return args
@@ -192,7 +198,9 @@ class MicroCLI(object):
         try:
             result = command_def.run(self, command_args)
         except Exception, e:
+            import traceback
             self.write("Error: %s" % str(e))
+            self.write("%s" % traceback.format_exc())
             sys.exit(1)
         if type(result) in [str, unicode]:
             self.write(result)
@@ -212,6 +220,13 @@ class MicroCLITestCase(unittest.TestCase):
         @command  # a command with only keyword arguments
         def f3(self, awesome_option="asdf"):
             return len(awesome_option)
+        @command  # a command with both positional and keyword arguments
+        def f4(self, arg1, arg2, kwopt="asdf"):
+            return "%s,%s,%s" % (arg1, arg2, kwopt)
+        @command  # a command the uses global options
+        def f5(self, cmd_specific_arg=2):
+            return int(self.global_options['some_option'])+int(cmd_specific_arg)
+
 
     def __init__(self, *args, **kwargs):
         super(MicroCLITestCase, self).__init__(*args, **kwargs)
@@ -250,9 +265,59 @@ class MicroCLITestCase(unittest.TestCase):
             cli = MicroCLITestCase.T("f3".split()).run()
             # kwargs are optional
             mock_exit.assert_called_with(4)
+
+    def test_kwargs_are_passed(self):
+        """kwarg values are passed as expected"""
         with self.patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T("f3 --awesome-option 1".split()).run()
-            # but they are honored
+            mock_exit.assert_called_with(1)
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("f3 --awesome-option 1234567".split()).run()
+            mock_exit.assert_called_with(7)
+
+    def test_mixing_args_and_kwargs(self):
+        """kwarg values can be mixed with arg values"""
+        from StringIO import StringIO
+        with self.patch("sys.exit") as mock_exit:
+            stdout = StringIO()
+            cli = MicroCLITestCase.T("f4 --kwopt c a b".split())
+            cli.stdout = stdout
+            cli.run()
+            self.assertEquals(stdout.getvalue(), "a,b,c\n")
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_global_options(self):
+        """test the global option parser"""
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("--some-option 67 f5".split())
+            cli.global_optparser.add_option(
+                    '--some-option',
+                    action='store',
+                    dest="some_option")
+            cli.run()
+            mock_exit.assert_called_with(67+2)
+
+    def test_mixing_global_and_cmd_options(self):
+        """test the global option parser"""
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("--some-option 67 f5 --cmd-specific-arg 13".split())
+            cli.global_optparser.add_option(
+                    '--some-option',
+                    action='store',
+                    dest="some_option")
+            cli.run()
+            mock_exit.assert_called_with(67+13)
+
+    def test_missing_arg_value(self):
+        """test what happends when the value of a kwarg is missing"""
+        with self.patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("--some-option 67 f5 --cmd-specific-arg".split())
+            cli.global_optparser.add_option(
+                    '--some-option',
+                    action='store',
+                    dest="some_option")
+            cli.run()
             mock_exit.assert_called_with(1)
 
 
