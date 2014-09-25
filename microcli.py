@@ -31,7 +31,7 @@ class PassThroughOptionParser(OptionParser):
         while rargs:
             try:
                 OptionParser._process_args(self, largs, rargs, values)
-            except (BadOptionError, AmbiguousOptionError), e:
+            except (BadOptionError, AmbiguousOptionError) as e:
                 largs.append(e.opt_str)
 
 
@@ -61,7 +61,7 @@ class CommandDefinition(object):
     def run(self, cli, args):
         try:
             kwargs, parsed_args = self.opt_parser.parse_args(args)
-        except UnboundLocalError, e:
+        except UnboundLocalError as e:
             cli.write("Error parsing command arguments")
             return 1  # same as sys.exit(1)
         else:
@@ -215,7 +215,7 @@ class MicroCLI(object):
         result = None
         try:
             result = command_def.run(self, command_args)
-        except Exception, e:
+        except Exception as e:
             import traceback
             self.write("Error: %s" % str(e))
             self.write("%s" % traceback.format_exc())
@@ -258,7 +258,7 @@ class MicroCLITestCase(unittest.TestCase):
             from mock import patch
             self.patch = patch
         except ImportError:
-            print "Missing dependency for test: mock"
+            sys.stdout.write("Missing dependency for test: mock\n")
             sys.exit(1)
 
     def setUp(self):
