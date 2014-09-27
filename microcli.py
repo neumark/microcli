@@ -1,15 +1,13 @@
 #!/usr/bin/env python
 from optparse import (OptionParser, BadOptionError,
-    AmbiguousOptionError, IndentedHelpFormatter)
+                      AmbiguousOptionError, IndentedHelpFormatter)
 import inspect
 import sys
-import os
 from functools import wraps
 import types
 import unittest
 
 COMMAND_ATTR = "_command"
-
 
 
 class CustomStderrOptionParser(OptionParser):
@@ -52,6 +50,7 @@ class CustomStderrOptionParser(OptionParser):
         self.print_usage(self.stderr)
         self.exit(2, "%s: error: %s\n" % (self.get_prog_name(), msg))
 
+
 class CustomHelpFormatter(IndentedHelpFormatter):
 
     options_heading = "Global options"
@@ -60,7 +59,7 @@ class CustomHelpFormatter(IndentedHelpFormatter):
         return "%*s%s" % (self.current_indent, "", msg)
 
     def format_heading(self, _heading):
-        # _heading is always "Options:", 
+        # _heading is always "Options:"
         return self._indent("%s:\n" % self.options_heading)
 
 
@@ -73,7 +72,6 @@ class CommandHelpFormatter(CustomHelpFormatter):
         self.current_indent = initial_indent
         self.command_definition = command_definition
 
-
     def format_usage(self, usage):
         command_help = self.command_definition.doc
         if command_help is not None:
@@ -82,31 +80,38 @@ class CommandHelpFormatter(CustomHelpFormatter):
         else:
             template = "%s\n"
             values = (self.command_definition.name)
-        return self._indent(template % values) + self._indent(self.get_command_usage())
+        return self._indent(template % values) +\
+            self._indent(self.get_command_usage())
 
     def get_command_usage(self):
-        if self.command_definition.varargs is None and len(self.command_definition.arg_names) == 0:
+        if self.command_definition.varargs is None and\
+                len(self.command_definition.arg_names) == 0:
             return "Usage: %s [options]" % self.command_definition.name
         vararg_list = ""
         if self.command_definition.varargs is not None:
-            vararg_list = " [%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]" % {'name': self.command_definition.varargs}
-        return "Usage: " + self.command_definition.name + " ".join(self.command_definition.arg_names) + vararg_list
-
+            vararg_template = " [%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]"
+            vararg_list = vararg_template % {
+                'name': self.command_definition.varargs}
+        return "Usage: %(name)s %(args)s%(varargs)s" % {
+            'name': self.command_definition.name,
+            'args': " ".join(self.command_definition.arg_names),
+            'varargs': vararg_list}
 
 
 class GlobalOptionParser(CustomStderrOptionParser):
 
-    USAGE="%prog [global options] command [command options] command arguments"
+    USAGE = "%prog [global options] command " +\
+            "[command options] command arguments"
 
     def __init__(self, command_definitions=None, **kwargs):
         formatter = CustomHelpFormatter()
         CustomStderrOptionParser.__init__(
-                                      self,
-                                      formatter=formatter,
-                                      ignore_unknown=True,
-                                      usage=GlobalOptionParser.USAGE,
-                                      **kwargs)
-        self.command_definitions=command_definitions
+            self,
+            formatter=formatter,
+            ignore_unknown=True,
+            usage=GlobalOptionParser.USAGE,
+            **kwargs)
+        self.command_definitions = command_definitions
 
     def print_help(self, file=None):
         """ recursively call all command parsers' helps """
@@ -119,24 +124,16 @@ class GlobalOptionParser(CustomStderrOptionParser):
 
 
 class CommandOptionParser(CustomStderrOptionParser):
-    """
-    An unknown option pass-through implementation of OptionParser.
-
-    When unknown arguments are encountered, bundle with largs and try again,
-    until rargs is depleted.
-
-    sys.exit(status) will still be called if a known argument is passed
-    incorrectly (e.g. missing arguments or bad argument types, etc.)
-    """
 
     def __init__(self, command_definition, **kwargs):
         formatter = CommandHelpFormatter(
-                        command_definition,
-                        initial_indent=4)
-        CustomStderrOptionParser.__init__(self,
-                    formatter=formatter,
-                    **kwargs)
-        self.command_definition=command_definition
+            command_definition,
+            initial_indent=4)
+        CustomStderrOptionParser.__init__(
+            self,
+            formatter=formatter,
+            **kwargs)
+        self.command_definition = command_definition
 
 
 class CommandDefinition(object):
@@ -179,12 +176,17 @@ class CommandDefinition(object):
             self.arg_check(cli, parsed_args)
             return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
 
-def command():
+
+def command(parser_options=None):
+    options = {
+        'parser': parser_options
+    }
+
     def decorator(func):
         @wraps(func)
         def wrapper(self, *args, **kwargs):
             return func(self, *args, **kwargs)
-        setattr(wrapper, COMMAND_ATTR, True)
+        setattr(wrapper, COMMAND_ATTR, options)
         return wrapper
     return decorator
 
@@ -266,7 +268,7 @@ class MicroCLI(object):
             '--%s' % cls.kwarg_name_to_option_name(arg_name),
             **add_option_kwargs)
 
-    def get_command_definition(self, cmd_name, cmd_fun):
+    def get_command_definition(self, cmd_name, cmd_fun, cmd_options):
         # get positional arguments
         argspec = inspect.getargspec(get_undecorated_function(cmd_fun))
         # note: the first argument for a command method is self.
@@ -282,10 +284,14 @@ class MicroCLI(object):
             cmd_fun,
             argspec.varargs,
             self.get_command_description(cmd_fun))
+        parser_kwargs = {
+            'stderr': self.stdout,
+            'exit': self.exit
+        }
+        if type(cmd_options['parser']) == dict:
+            parser_kwargs.update(cmd_options['parser'])
         command_definition.opt_parser = CommandOptionParser(
-            command_definition,
-            stderr=self.stdout,
-            exit=self.exit)
+            command_definition, **parser_kwargs)
         for arg_name, default_value in args_with_defaults:
             if default_value is not None:
                 self.add_parser_option(
@@ -299,8 +305,8 @@ class MicroCLI(object):
         command_dict = {}
         for i in dir(cls):
             cmd = getattr(cls, i)
-            if getattr(cmd, COMMAND_ATTR, False) == True:
-                command_dict[i] = cmd
+            if type(getattr(cmd, COMMAND_ATTR, False)) == dict:
+                command_dict[i] = (cmd, getattr(cmd, COMMAND_ATTR))
         return command_dict
 
     @classmethod
@@ -309,8 +315,8 @@ class MicroCLI(object):
 
     def get_all_command_definitions(self):
         command_definition = {}
-        for cmd_name, cmd_fun in self.get_commands().iteritems():
-            cmd_def = self.get_command_definition(cmd_name, cmd_fun)
+        for cmd_name, cmd_data in self.get_commands().iteritems():
+            cmd_def = self.get_command_definition(cmd_name, *cmd_data)
             command_definition[cmd_name] = cmd_def
         return command_definition
 
@@ -397,6 +403,11 @@ class MicroCLITestCase(unittest.TestCase):
                 str(bool_option2),
                 type(string_option).__name__,
                 str(string_option))
+
+        @command(parser_options={'ignore_unknown': True})
+        def f8(self, *option):
+            """command parsers can treat unknown options as varargs"""
+            return " ".join(option)
 
     def __init__(self, *args, **kwargs):
         super(MicroCLITestCase, self).__init__(*args, **kwargs)
@@ -537,6 +548,18 @@ class MicroCLITestCase(unittest.TestCase):
             output = cli.stdout.getvalue()
             self.assertTrue(output.startswith("Usage: "))
             print output
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_parser_options(self):
+        """parser options can be passed as an argument to @command()"""
+        with patch("sys.exit") as mock_exit:
+            argv = "f8 -a b --c d e f g h i".split()
+            cli = MicroCLITestCase.T(argv, StringIO())
+            cli.run()
+            self.assertEquals(
+                cli.stdout.getvalue(),
+                "%s\n" % " ".join(argv[1:]))
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
 
