@@ -3,14 +3,13 @@
 from setuptools import setup  # noqa
 
 setup(name="microcli",
-      version="0.1",
-      description="Extremely-lightweight CLI lib for python",
-      long_description=open("README.md").read(),
+      version="0.2.1",
+      description="Extremely lightweight CLI lib for python",
+      long_description="Extremely lightweight CLI lib for python",
       author="Peter Neumark",
       author_email="neumark.peter@gmail.com",
       url="https://github.com/neumark/microcli",
       download_url="https://github.com/neumark/microcli",
-      install_requires=open('requirements.txt').read().split(),
       py_modules=["microcli"],
       classifiers=[
           "Intended Audience :: Developers",
