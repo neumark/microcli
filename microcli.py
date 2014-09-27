@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-from optparse import (OptionParser, BadOptionError, AmbiguousOptionError)
+from optparse import (OptionParser, BadOptionError,
+    AmbiguousOptionError, IndentedHelpFormatter)
 import inspect
 import sys
 import os
@@ -17,7 +18,30 @@ COMMAND_ATTR = "_command"
 #    how-can-i-get-optparses-optionparser-to-ignore-invalid-options
 
 
-class PassThroughOptionParser(OptionParser):
+class CustomStderrOptionParser(OptionParser):
+
+    def __init__(self, stderr=sys.stderr, exit=sys.exit, **kwargs):
+        OptionParser.__init__(self, **kwargs)
+        self.exit_impl = exit
+        self.stderr = stderr
+
+    def print_usage(self, file=None):
+        return OptionParser.print_usage(self, file or self.stderr)
+
+    def print_help(self, file=None):
+        return OptionParser.print_help(self, file or self.stderr)
+
+    def exit(self, status=0, msg=None):
+        if msg:
+            self.stderr.write(msg)
+        self.exit_impl(status)
+
+    def error(self, msg):
+        self.print_usage(self.stderr)
+        self.exit(2, "%s: error: %s\n" % (self.get_prog_name(), msg))
+
+
+class GlobalOptionParser(CustomStderrOptionParser):
     """
     An unknown option pass-through implementation of OptionParser.
 
@@ -27,12 +51,75 @@ class PassThroughOptionParser(OptionParser):
     sys.exit(status) will still be called if a known argument is passed
     incorrectly (e.g. missing arguments or bad argument types, etc.)
     """
+
+    def __init__(self, command_definitions=None, **kwargs):
+        CustomStderrOptionParser.__init__(self, **kwargs)
+        self.command_definitions=command_definitions
+
+    def print_help(self, file=None):
+        """ recursively call all command parsers' helps """
+        output = file or self.stderr
+        CustomStderrOptionParser.print_help(self, output)
+        output.write("\nCommands:\n")
+        for command_def in self.command_definitions.values():
+            command_def.opt_parser.print_help(output)
+            output.write("\n")
+
     def _process_args(self, largs, rargs, values):
         while rargs:
             try:
-                OptionParser._process_args(self, largs, rargs, values)
+                CustomStderrOptionParser._process_args(self, largs, rargs, values)
             except (BadOptionError, AmbiguousOptionError) as e:
                 largs.append(e.opt_str)
+
+class CommandHelpFormatter(IndentedHelpFormatter):
+
+    def __init__(self, command_definition, initial_indent=0, **kwargs):
+        IndentedHelpFormatter.__init__(self, **kwargs)
+        self.current_indent = initial_indent
+        self.command_definition = command_definition
+
+    def _indent(self, msg):
+        return "%*s%s" % (self.current_indent, "", msg)
+
+    def format_usage(self, usage):
+        command_help = self.command_definition.doc
+        if command_help is not None:
+            template = "%s: %s\n"
+            values = (self.command_definition.name, command_help)
+        else:
+            template = "%s\n"
+            values = (self.command_definition.name)
+        return self._indent(template % values) + self._indent(self.get_positional_args())
+
+    def format_heading(self, _heading):
+        # _heading is always "Options:", 
+        return self._indent("Command options:\n")
+
+    def get_positional_args(self):
+        if self.command_definition.varargs is None and len(self.command_definition.arg_names) == 0:
+            return "No arguments expected"
+        return "TODO: list args"
+
+class CommandOptionParser(CustomStderrOptionParser):
+    """
+    An unknown option pass-through implementation of OptionParser.
+
+    When unknown arguments are encountered, bundle with largs and try again,
+    until rargs is depleted.
+
+    sys.exit(status) will still be called if a known argument is passed
+    incorrectly (e.g. missing arguments or bad argument types, etc.)
+    """
+
+    def __init__(self, command_definition, **kwargs):
+        formatter = CommandHelpFormatter(
+                        command_definition,
+                        initial_indent=4)
+        CustomStderrOptionParser.__init__(self,
+                    formatter=formatter,
+                    **kwargs)
+        self.command_definition=command_definition
 
 
 class CommandDefinition(object):
@@ -43,18 +130,25 @@ class CommandDefinition(object):
             opt_parser,
             arg_names,
             fun,
+            varargs=None,
             doc=None):
         self.name = name
         self.opt_parser = opt_parser
         self.arg_names = arg_names
         self.fun = fun
+        self.varargs = varargs
         self.doc = doc
 
     def arg_check(self, cli, args):
+        if self.varargs is not None and (len(args) >= len(self.arg_names)):
+            return  # if the function accepts varargs, we're good.
         if len(args) != len(self.arg_names):
-            cli.write(
-                "Expected %s arguments, got %s" % (
-                    len(self.arg_names), len(args)))
+            error_template = "Expected %s arguments, got %s"
+            if self.varargs is not None:
+                error_template = "Expected at least %s arguments, got %s"
+            cli.write(error_template % (
+                len(self.arg_names),
+                len(args)))
             cli.write("Expected arguments: %s" % ", ".join(self.arg_names))
             cli.exit(1)
 
@@ -102,12 +196,14 @@ def values_to_dict(values):
 
 class MicroCLI(object):
 
-    def __init__(self, argv=None):
+    def __init__(self, argv=None, stdout=None):
         self.argv = argv if argv is not None else sys.argv[1:]
-        self.global_optparser = PassThroughOptionParser()
-        self.stdout = sys.stdout
-        self.default_command = "help"
+        self.stdout = stdout or sys.stdout
         self.command_definitions = self.get_all_command_definitions()
+        self.global_optparser = GlobalOptionParser(
+            exit=self.exit,
+            command_definitions=self.command_definitions)
+        self.default_command = "help"
 
     @classmethod
     def exit(cls, exit_code):
@@ -152,8 +248,7 @@ class MicroCLI(object):
             '--%s' % cls.kwarg_name_to_option_name(arg_name),
             **add_option_kwargs)
 
-    @classmethod
-    def get_command_definition(cls, cmd_name, cmd_fun):
+    def get_command_definition(self, cmd_name, cmd_fun):
         # get positional arguments
         argspec = inspect.getargspec(get_undecorated_function(cmd_fun))
         # note: the first argument for a command method is self.
@@ -162,23 +257,31 @@ class MicroCLI(object):
         padded_defaults = [None] * (len(arg_names) - len(defaults))
         padded_defaults += list(defaults)
         args_with_defaults = zip(arg_names, padded_defaults)
-        parser = OptionParser()
-        for arg_name, default_value in args_with_defaults:
-            if default_value is not None:
-                cls.add_parser_option(parser, arg_name, default_value)
-        return CommandDefinition(
+        command_definition = CommandDefinition(
             cmd_name,
-            parser,
+            None,  # set parser later
             [a for a, d in args_with_defaults if d is None],
             cmd_fun,
-            cls.get_command_description(cmd_fun))
+            argspec.varargs,
+            self.get_command_description(cmd_fun))
+        command_definition.opt_parser = CommandOptionParser(
+            command_definition,
+            stderr=self.stdout,
+            exit=self.exit)
+        for arg_name, default_value in args_with_defaults:
+            if default_value is not None:
+                self.add_parser_option(
+                    command_definition.opt_parser,
+                    arg_name,
+                    default_value)
+        return command_definition
 
     @classmethod
     def get_commands(cls):
         command_dict = {}
         for i in dir(cls):
             cmd = getattr(cls, i)
-            if getattr(cmd, COMMAND_ATTR, None) is not None:
+            if getattr(cmd, COMMAND_ATTR, False) == True:
                 command_dict[i] = cmd
         return command_dict
 
@@ -186,11 +289,10 @@ class MicroCLI(object):
     def get_command_description(cls, cmd_fun):
         return getattr(cmd_fun, '__doc__', None)
 
-    @classmethod
-    def get_all_command_definitions(cls):
+    def get_all_command_definitions(self):
         command_definition = {}
-        for cmd_name, cmd_fun in cls.get_commands().iteritems():
-            cmd_def = cls.get_command_definition(cmd_name, cmd_fun)
+        for cmd_name, cmd_fun in self.get_commands().iteritems():
+            cmd_def = self.get_command_definition(cmd_name, cmd_fun)
             command_definition[cmd_name] = cmd_def
         return command_definition
 
@@ -205,6 +307,7 @@ class MicroCLI(object):
         cli.run()
 
     def run(self):
+        self.global_optparser.stderr = self.stdout
         self.arg_list = self.read_global_options()
         command_name = self.arg_list[0] if self.arg_list else None
         if command_name in self.command_definitions:
@@ -230,33 +333,62 @@ class MicroCLITestCase(unittest.TestCase):
     RETVAL = 15
 
     class T(MicroCLI):
-        @command  # simple command: no parameters
+        @command
         def f1(self):
+            """simple command: no parameters"""
             return MicroCLITestCase.RETVAL
 
-        @command  # a command with only positional arguments
+        @command
         def f2(self, a):
+            """a command with only positional arguments"""
             return a
 
-        @command  # a command with only keyword arguments
+        @command
         def f3(self, awesome_option="asdf"):
+            """a command with only keyword arguments"""
             return len(awesome_option)
 
-        @command  # a command with both positional and keyword arguments
+        @command
         def f4(self, arg1, arg2, kwopt="asdf"):
+            """a command with both positional and keyword arguments"""
             return "%s,%s,%s" % (arg1, arg2, kwopt)
 
-        @command  # a command the uses global options
+        @command
         def f5(self, cmd_specific_arg=2):
+            """a command that uses global options"""
             return (int(self.global_options['some_option']) +
                     int(cmd_specific_arg))
 
+        @command
+        def f6(self, arg1, arg2, *vararg):
+            """a command which accepts varargs"""
+            return "%s,%s,%s" % (arg1, arg2, len(vararg))
+
+        @command
+        def f7(self, int_option=0, float_option=0.1, bool_option1=True,
+               bool_option2=False, string_option="asdf"):
+            """a command to test the types of kwargs"""
+            return "%s,%s,%s,%s,%s,%s,%s,%s,%s,%s" % (
+                type(int_option).__name__,
+                str(int_option),
+                type(float_option).__name__,
+                str(float_option),
+                type(bool_option1).__name__,
+                str(bool_option1),
+                type(bool_option2).__name__,
+                str(bool_option2),
+                type(string_option).__name__,
+                str(string_option))
+
     def __init__(self, *args, **kwargs):
         super(MicroCLITestCase, self).__init__(*args, **kwargs)
-        # doing import here so mock is not a dependency for regular use
+        # doing import here so these imports are
+        # not dependencies for regular use
         try:
+            global patch
+            global StringIO
             from mock import patch
-            self.patch = patch
+            from StringIO import StringIO
         except ImportError:
             sys.stdout.write("Missing dependency for test: mock\n")
             sys.exit(1)
@@ -266,55 +398,51 @@ class MicroCLITestCase(unittest.TestCase):
 
     def test_command_noargs(self):
         """exit value is what the command returns if its an int"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             self.T.main(["f1"])
             mock_exit.assert_called_with(MicroCLITestCase.RETVAL)
 
     def test_print_returned_string(self):
         """if the command returns a string it is printed"""
-        from StringIO import StringIO
-        with self.patch("sys.exit") as mock_exit:
-            stdout = StringIO()
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T("f2 asdf".split())
-            cli.stdout = stdout
+            cli.stdout = StringIO()
             cli.run()
-            self.assertEquals(stdout.getvalue(), "asdf\n")
+            self.assertEquals(cli.stdout.getvalue(), "asdf\n")
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
 
     def test_kwargs_are_optional(self):
         """kwarg values always have defaults"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T("f3".split()).run()
             # kwargs are optional
             mock_exit.assert_called_with(4)
 
     def test_kwargs_are_passed(self):
         """kwarg values are passed as expected"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
                 "f3 --awesome-option 1".split()).run()
             mock_exit.assert_called_with(1)
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
                 "f3 --awesome-option 1234567".split()).run()
             mock_exit.assert_called_with(7)
 
     def test_mixing_args_and_kwargs(self):
         """kwarg values can be mixed with arg values"""
-        from StringIO import StringIO
-        with self.patch("sys.exit") as mock_exit:
-            stdout = StringIO()
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T("f4 --kwopt c a b".split())
-            cli.stdout = stdout
+            cli.stdout = StringIO()
             cli.run()
-            self.assertEquals(stdout.getvalue(), "a,b,c\n")
+            self.assertEquals(cli.stdout.getvalue(), "a,b,c\n")
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
 
     def test_global_options(self):
         """test the global option parser"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T("--some-option 67 f5".split())
             cli.global_optparser.add_option(
                 '--some-option',
@@ -325,7 +453,7 @@ class MicroCLITestCase(unittest.TestCase):
 
     def test_mixing_global_and_cmd_options(self):
         """test the global option parser"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
                 "--some-option 67 f5 --cmd-specific-arg 13".split())
             cli.global_optparser.add_option(
@@ -337,7 +465,7 @@ class MicroCLITestCase(unittest.TestCase):
 
     def test_missing_kwarg_value(self):
         """test what happends when the value of a kwarg is missing"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
                 "--some-option 67 f5 --cmd-specific-arg".split())
             cli.global_optparser.add_option(
@@ -350,10 +478,49 @@ class MicroCLITestCase(unittest.TestCase):
     def test_missing_arg(self):
         """test what happends when not enough
            arguments are passed to a function"""
-        with self.patch("sys.exit") as mock_exit:
+        with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(["f4"])
             cli.command_definitions["f4"].arg_check(cli, [])
             mock_exit.assert_called_with(1)
+
+    def test_varargs(self):
+        """varargs are properly passed into the function"""
+        with patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("f6 a b c d e f g h i".split())
+            cli.stdout = StringIO()
+            cli.run()
+            self.assertEquals(cli.stdout.getvalue(), "a,b,7\n")
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_kwarg_type(self):
+        """kwarg values have the type of their default arguments"""
+        with patch.object(MicroCLI, "exit") as mock_exit:
+            cli = MicroCLITestCase.T([
+                "f7",
+                "--int-option", "1",
+                "--float-option", "2.5",
+                "--bool-option1",
+                "--bool-option2",
+                "--string-option", "alma"])
+            cli.stdout = StringIO()
+            cli.run()
+            self.assertEquals(
+                cli.stdout.getvalue(),
+                "int,1,float,2.5,bool,False,bool,True,str,alma\n")
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_help(self):
+        """defined commands appear in the help message"""
+        with patch.object(MicroCLI, "exit") as mock_exit:
+            cli = MicroCLITestCase.T(["-h"], StringIO())
+            cli.run()
+            output = cli.stdout.getvalue()
+            self.assertTrue(output.startswith("Usage: "))
+            print output
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
 
 
 def suite():
