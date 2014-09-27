@@ -8,22 +8,34 @@ from functools import wraps
 import types
 import unittest
 
-USAGE = "Usage: fibi [options] command [command args]"
-EXAMPLES = """Examples:
-    TODO
-"""
 COMMAND_ATTR = "_command"
 
-# from http://stackoverflow.com/questions/1885161/
-#    how-can-i-get-optparses-optionparser-to-ignore-invalid-options
 
 
 class CustomStderrOptionParser(OptionParser):
 
-    def __init__(self, stderr=sys.stderr, exit=sys.exit, **kwargs):
+    def __init__(
+            self,
+            stderr=sys.stderr,
+            exit=sys.exit,
+            ignore_unknown=False,
+            **kwargs):
         OptionParser.__init__(self, **kwargs)
         self.exit_impl = exit
         self.stderr = stderr
+        self.ignore_unknown = ignore_unknown
+
+    def _process_args(self, largs, rargs, values):
+        if not self.ignore_unknown:
+            OptionParser._process_args(self, largs, rargs, values)
+        else:
+            # from http://stackoverflow.com/questions/1885161/
+            #    how-can-i-get-optparses-optionparser-to-ignore-invalid-options
+            while rargs:
+                try:
+                    OptionParser._process_args(self, largs, rargs, values)
+                except (BadOptionError, AmbiguousOptionError) as e:
+                    largs.append(e.opt_str)
 
     def print_usage(self, file=None):
         return OptionParser.print_usage(self, file or self.stderr)
@@ -40,20 +52,60 @@ class CustomStderrOptionParser(OptionParser):
         self.print_usage(self.stderr)
         self.exit(2, "%s: error: %s\n" % (self.get_prog_name(), msg))
 
+class CustomHelpFormatter(IndentedHelpFormatter):
+
+    options_heading = "Global options"
+
+    def _indent(self, msg):
+        return "%*s%s" % (self.current_indent, "", msg)
+
+    def format_heading(self, _heading):
+        # _heading is always "Options:", 
+        return self._indent("%s:\n" % self.options_heading)
+
+
+class CommandHelpFormatter(CustomHelpFormatter):
+
+    options_heading = "Command options"
+
+    def __init__(self, command_definition, initial_indent=0, **kwargs):
+        CustomHelpFormatter.__init__(self, **kwargs)
+        self.current_indent = initial_indent
+        self.command_definition = command_definition
+
+
+    def format_usage(self, usage):
+        command_help = self.command_definition.doc
+        if command_help is not None:
+            template = "%s: %s\n"
+            values = (self.command_definition.name, command_help)
+        else:
+            template = "%s\n"
+            values = (self.command_definition.name)
+        return self._indent(template % values) + self._indent(self.get_command_usage())
+
+    def get_command_usage(self):
+        if self.command_definition.varargs is None and len(self.command_definition.arg_names) == 0:
+            return "Usage: %s [options]" % self.command_definition.name
+        vararg_list = ""
+        if self.command_definition.varargs is not None:
+            vararg_list = " [%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]" % {'name': self.command_definition.varargs}
+        return "Usage: " + self.command_definition.name + " ".join(self.command_definition.arg_names) + vararg_list
+
+
 
 class GlobalOptionParser(CustomStderrOptionParser):
-    """
-    An unknown option pass-through implementation of OptionParser.
 
-    When unknown arguments are encountered, bundle with largs and try again,
-    until rargs is depleted.
-
-    sys.exit(status) will still be called if a known argument is passed
-    incorrectly (e.g. missing arguments or bad argument types, etc.)
-    """
+    USAGE="%prog [global options] command [command options] command arguments"
 
     def __init__(self, command_definitions=None, **kwargs):
-        CustomStderrOptionParser.__init__(self, **kwargs)
+        formatter = CustomHelpFormatter()
+        CustomStderrOptionParser.__init__(
+                                      self,
+                                      formatter=formatter,
+                                      ignore_unknown=True,
+                                      usage=GlobalOptionParser.USAGE,
+                                      **kwargs)
         self.command_definitions=command_definitions
 
     def print_help(self, file=None):
@@ -65,41 +117,6 @@ class GlobalOptionParser(CustomStderrOptionParser):
             command_def.opt_parser.print_help(output)
             output.write("\n")
 
-    def _process_args(self, largs, rargs, values):
-        while rargs:
-            try:
-                CustomStderrOptionParser._process_args(self, largs, rargs, values)
-            except (BadOptionError, AmbiguousOptionError) as e:
-                largs.append(e.opt_str)
-
-class CommandHelpFormatter(IndentedHelpFormatter):
-
-    def __init__(self, command_definition, initial_indent=0, **kwargs):
-        IndentedHelpFormatter.__init__(self, **kwargs)
-        self.current_indent = initial_indent
-        self.command_definition = command_definition
-
-    def _indent(self, msg):
-        return "%*s%s" % (self.current_indent, "", msg)
-
-    def format_usage(self, usage):
-        command_help = self.command_definition.doc
-        if command_help is not None:
-            template = "%s: %s\n"
-            values = (self.command_definition.name, command_help)
-        else:
-            template = "%s\n"
-            values = (self.command_definition.name)
-        return self._indent(template % values) + self._indent(self.get_positional_args())
-
-    def format_heading(self, _heading):
-        # _heading is always "Options:", 
-        return self._indent("Command options:\n")
-
-    def get_positional_args(self):
-        if self.command_definition.varargs is None and len(self.command_definition.arg_names) == 0:
-            return "No arguments expected"
-        return "TODO: list args"
 
 class CommandOptionParser(CustomStderrOptionParser):
     """
@@ -162,13 +179,14 @@ class CommandDefinition(object):
             self.arg_check(cli, parsed_args)
             return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
 
-
-def command(func):
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        return func(self, *args, **kwargs)
-    setattr(wrapper, COMMAND_ATTR, True)
-    return wrapper
+def command():
+    def decorator(func):
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            return func(self, *args, **kwargs)
+        setattr(wrapper, COMMAND_ATTR, True)
+        return wrapper
+    return decorator
 
 
 def get_undecorated_function(func):
@@ -296,7 +314,7 @@ class MicroCLI(object):
             command_definition[cmd_name] = cmd_def
         return command_definition
 
-    @command
+    @command()
     def help(self, *args, **kwargs):
         """ Print usage """
         pass
@@ -333,38 +351,38 @@ class MicroCLITestCase(unittest.TestCase):
     RETVAL = 15
 
     class T(MicroCLI):
-        @command
+        @command()
         def f1(self):
             """simple command: no parameters"""
             return MicroCLITestCase.RETVAL
 
-        @command
+        @command()
         def f2(self, a):
             """a command with only positional arguments"""
             return a
 
-        @command
+        @command()
         def f3(self, awesome_option="asdf"):
             """a command with only keyword arguments"""
             return len(awesome_option)
 
-        @command
+        @command()
         def f4(self, arg1, arg2, kwopt="asdf"):
             """a command with both positional and keyword arguments"""
             return "%s,%s,%s" % (arg1, arg2, kwopt)
 
-        @command
+        @command()
         def f5(self, cmd_specific_arg=2):
             """a command that uses global options"""
             return (int(self.global_options['some_option']) +
                     int(cmd_specific_arg))
 
-        @command
+        @command()
         def f6(self, arg1, arg2, *vararg):
             """a command which accepts varargs"""
             return "%s,%s,%s" % (arg1, arg2, len(vararg))
 
-        @command
+        @command()
         def f7(self, int_option=0, float_option=0.1, bool_option1=True,
                bool_option2=False, string_option="asdf"):
             """a command to test the types of kwargs"""
