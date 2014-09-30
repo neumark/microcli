@@ -33,6 +33,8 @@ class CustomStderrOptionParser(OptionParser):
                 try:
                     OptionParser._process_args(self, largs, rargs, values)
                 except (BadOptionError, AmbiguousOptionError) as e:
+                    # If an argument was not parseable,
+                    # pass on the remainig arguments
                     largs.append(e.opt_str)
 
     def print_usage(self, file=None):
@@ -113,6 +115,7 @@ class GlobalOptionParser(CustomStderrOptionParser):
             **kwargs)
         self.command_definitions = command_definitions
 
+
     def print_help(self, file=None):
         """ recursively call all command parsers' helps """
         output = file or self.stderr
@@ -134,6 +137,11 @@ class CommandOptionParser(CustomStderrOptionParser):
             formatter=formatter,
             **kwargs)
         self.command_definition = command_definition
+
+    def _add_help_option(self):
+        """Don't add help option"""
+        pass
+
 
 
 class CommandDefinition(object):
@@ -223,7 +231,7 @@ class MicroCLI(object):
         self.global_optparser = GlobalOptionParser(
             exit=self.exit,
             command_definitions=self.command_definitions)
-        self.default_command = "help"
+        self.default_command = None
 
     @classmethod
     def exit(cls, exit_code):
@@ -237,8 +245,6 @@ class MicroCLI(object):
     def read_global_options(self):
         global_options, args = self.global_optparser.parse_args(self.argv)
         self.global_options = global_options.__dict__
-        if len(args) < 1:
-            return [self.default_command]
         return args
 
     @classmethod
@@ -261,7 +267,8 @@ class MicroCLI(object):
         add_option_kwargs = {
             'action': action,
             'dest': arg_name,
-            'default': default_value}
+            'default': default_value,
+            'help': 'type: %s' % arg_type}
         if arg_type is not None:
             add_option_kwargs['type'] = arg_type
         parser.add_option(
@@ -321,8 +328,9 @@ class MicroCLI(object):
         return command_definition
 
     @command()
-    def help(self, *args, **kwargs):
+    def help(self):
         """ Print usage """
+        self.global_optparser.print_help()
         pass
 
     @classmethod
@@ -333,11 +341,17 @@ class MicroCLI(object):
     def run(self):
         self.global_optparser.stderr = self.stdout
         self.arg_list = self.read_global_options()
-        command_name = self.arg_list[0] if self.arg_list else None
+        command_name = self.arg_list[0] if self.arg_list else self.default_command
+        if command_name is None:
+            self.write("Please specify a command (try the 'help' command for usage info)!")
+            self.exit(1)
         if command_name in self.command_definitions:
             command_def = self.command_definitions[command_name]
         else:
-            command_def = self.command_definitions[self.default_command]
+            self.write((
+                "Unrecognized command '%s' " +\
+                "(try the 'help' command for usage info)!") % command_name)
+            self.exit(1)
         command_args = self.arg_list[1:]
         result = None
         try:
@@ -562,6 +576,26 @@ class MicroCLITestCase(unittest.TestCase):
                 "%s\n" % " ".join(argv[1:]))
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
+
+    def test_command_vs_global_options(self):
+        """Options following the command name are command options"""
+        with patch.object(MicroCLI, "exit") as mock_exit:
+            cli = MicroCLITestCase.T(
+                "--cmd-specific-arg 51 f5 --cmd-specific-arg 53".split())
+            cli.global_optparser.add_option(
+                '--cmd-specific-arg',
+                action='store',
+                dest="some_option")
+            cli.run()
+            mock_exit.assert_called_with(104)
+
+
+    # TODO: test unrecognized command
+    # TODO: test options are global options only until
+    #       command is encountered, eg: in ./example.py add -h
+    #       -h should be a command option.
+    # TODO: test default command
+    # TODO: kwarg types reflected in help
 
 
 def suite():
