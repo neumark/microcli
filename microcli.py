@@ -32,6 +32,8 @@ class CustomStderrOptionParser(OptionParser):
             while rargs:
                 try:
                     OptionParser._process_args(self, largs, rargs, values)
+                    if not self.allow_interspersed_args:
+                        return
                 except (BadOptionError, AmbiguousOptionError) as e:
                     # If an argument was not parseable,
                     # pass on the remainig arguments
@@ -114,7 +116,7 @@ class GlobalOptionParser(CustomStderrOptionParser):
             usage=GlobalOptionParser.USAGE,
             **kwargs)
         self.command_definitions = command_definitions
-
+        self.allow_interspersed_args = False
 
     def print_help(self, file=None):
         """ recursively call all command parsers' helps """
@@ -267,8 +269,11 @@ class MicroCLI(object):
         add_option_kwargs = {
             'action': action,
             'dest': arg_name,
-            'default': default_value,
-            'help': 'type: %s' % arg_type}
+            'default': default_value
+            }
+        if type(default_value) != bool:
+            add_option_kwargs['help'] = 'type: %s (default is %s)' % (
+                    type(default_value).__name__, default_value)
         if arg_type is not None:
             add_option_kwargs['type'] = arg_type
         parser.add_option(
@@ -347,23 +352,23 @@ class MicroCLI(object):
             self.exit(1)
         if command_name in self.command_definitions:
             command_def = self.command_definitions[command_name]
+            command_args = self.arg_list[1:]
+            result = None
+            try:
+                result = command_def.run(self, command_args)
+            except Exception as e:
+                import traceback
+                self.write("Error: %s" % str(e))
+                self.write("%s" % traceback.format_exc())
+                self.exit(1)
+            if type(result) in [str, unicode]:
+                self.write(result)
+            self.exit(result if type(result) == int else 0)
         else:
             self.write((
                 "Unrecognized command '%s' " +\
                 "(try the 'help' command for usage info)!") % command_name)
             self.exit(1)
-        command_args = self.arg_list[1:]
-        result = None
-        try:
-            result = command_def.run(self, command_args)
-        except Exception as e:
-            import traceback
-            self.write("Error: %s" % str(e))
-            self.write("%s" % traceback.format_exc())
-            self.exit(1)
-        if type(result) in [str, unicode]:
-            self.write(result)
-        self.exit(result if type(result) == int else 0)
 
 
 class MicroCLITestCase(unittest.TestCase):
@@ -561,9 +566,8 @@ class MicroCLITestCase(unittest.TestCase):
             cli.run()
             output = cli.stdout.getvalue()
             self.assertTrue(output.startswith("Usage: "))
-            print output
             # successful execution exits with code 0
-            mock_exit.assert_called_with(0)
+            mock_exit.assert_called_with(1)
 
     def test_parser_options(self):
         """parser options can be passed as an argument to @command()"""
@@ -580,6 +584,7 @@ class MicroCLITestCase(unittest.TestCase):
     def test_command_vs_global_options(self):
         """Options following the command name are command options"""
         with patch.object(MicroCLI, "exit") as mock_exit:
+            # --cmd-specific-arg is both a global and a command option.
             cli = MicroCLITestCase.T(
                 "--cmd-specific-arg 51 f5 --cmd-specific-arg 53".split())
             cli.global_optparser.add_option(
@@ -591,9 +596,6 @@ class MicroCLITestCase(unittest.TestCase):
 
 
     # TODO: test unrecognized command
-    # TODO: test options are global options only until
-    #       command is encountered, eg: in ./example.py add -h
-    #       -h should be a command option.
     # TODO: test default command
     # TODO: kwarg types reflected in help
 
