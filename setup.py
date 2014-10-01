@@ -13,7 +13,7 @@ setup(name="microcli",
       py_modules=["microcli"],
       classifiers=[
           "Intended Audience :: Developers",
-          "License :: OSI Approved :: Apache License 2.0",
+          "License :: OSI Approved :: Apache Software License",
           "Operating System :: OS Independent",
           "Programming Language :: Python",
           "Topic :: Software Development :: Libraries :: Python Modules",
