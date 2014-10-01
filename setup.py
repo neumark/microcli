@@ -3,7 +3,7 @@
 from setuptools import setup  # noqa
 
 setup(name="microcli",
-      version="0.2.1",
+      version="0.2.2",
       description="Extremely lightweight CLI lib for python",
       long_description="Extremely lightweight CLI lib for python",
       author="Peter Neumark",
@@ -13,7 +13,7 @@ setup(name="microcli",
       py_modules=["microcli"],
       classifiers=[
           "Intended Audience :: Developers",
-          "License :: OSI Approved :: Python Software Foundation License",
+          "License :: OSI Approved :: Apache License 2.0",
           "Operating System :: OS Independent",
           "Programming Language :: Python",
           "Topic :: Software Development :: Libraries :: Python Modules",
