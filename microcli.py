@@ -8,7 +8,8 @@ import types
 import unittest
 
 COMMAND_ATTR = "_command"
-
+GLOBAL_OPTIONS_STR = "[global options]"
+COMMAND_OPTIONS_STR = "[command options]"
 
 class CustomStderrOptionParser(OptionParser):
 
@@ -71,11 +72,11 @@ class CommandHelpFormatter(CustomHelpFormatter):
 
     options_heading = "Command options"
 
-    def __init__(self, command_definition, has_global_options=True, initial_indent=0, **kwargs):
+    def __init__(self, command_definition, get_has_global_options=lambda: True, initial_indent=0, **kwargs):
         CustomHelpFormatter.__init__(self, **kwargs)
         self.current_indent = initial_indent
         self.command_definition = command_definition
-        self.has_global_options = has_global_options
+        self.get_has_global_options = get_has_global_options
 
     def format_usage(self, usage):
         command_help = self.command_definition.doc
@@ -89,9 +90,10 @@ class CommandHelpFormatter(CustomHelpFormatter):
             self._indent(self.get_command_usage())
 
     def get_command_usage(self):
-        global_options = "[global options]" if self.has_global_options else ""
-        program_and_command = "Usage: %s [global_options] %s" % (
+        global_options = "[global options] " if self.get_has_global_options() else ""
+        program_and_command = "Usage: %s %s%s" % (
             self.command_definition.opt_parser.get_prog_name(),
+            global_options,
             self.command_definition.name)
         if self.command_definition.varargs is None and\
                 len(self.command_definition.arg_names) == 0:
@@ -103,7 +105,7 @@ class CommandHelpFormatter(CustomHelpFormatter):
                 'name': self.command_definition.varargs}
         options_str = ""
         if len(self.command_definition.opt_parser.option_list) > 0:
-            options_str = "[command options] "
+            options_str = "%s " % COMMAND_OPTIONS_STR
         return "%(p_and_c)s %(options)s%(args)s%(varargs)s" % {
             'p_and_c': program_and_command, 
             'name': self.command_definition.name,
@@ -114,7 +116,7 @@ class CommandHelpFormatter(CustomHelpFormatter):
 
 class GlobalOptionParser(CustomStderrOptionParser):
 
-    USAGE = "%prog [global options] command " +\
+    USAGE = "%prog %scommand " +\
             "[command options] command arguments"
 
     def __init__(self, command_definitions=None, **kwargs):
@@ -128,6 +130,12 @@ class GlobalOptionParser(CustomStderrOptionParser):
         self.command_definitions = command_definitions
         self.allow_interspersed_args = False
 
+    def expand_prog_name(self, s):
+        global_options = ""
+        if len(self.option_list) > 0:
+            global_options = "%s " % GLOBAL_OPTIONS_STR
+        return CustomStderrOptionParser.expand_prog_name(self, s) % global_options
+
     def print_help(self, file=None):
         """ recursively call all command parsers' helps """
         output = file or self.stderr
@@ -140,10 +148,10 @@ class GlobalOptionParser(CustomStderrOptionParser):
 
 class CommandOptionParser(CustomStderrOptionParser):
 
-    def __init__(self, command_definition, has_global_options, **kwargs):
+    def __init__(self, command_definition, get_has_global_options, **kwargs):
         formatter = CommandHelpFormatter(
             command_definition,
-            has_global_options=has_global_options,
+            get_has_global_options=get_has_global_options,
             initial_indent=4)
         CustomStderrOptionParser.__init__(
             self,
@@ -211,6 +219,11 @@ def command(parser_options=None):
         return wrapper
     return decorator
 
+def is_string(obj):
+    try:
+        return isinstance(obj, basestring)
+    except NameError:
+        return isinstance(obj, str)
 
 def get_undecorated_function(func):
     func_name = func.__name__
@@ -222,13 +235,26 @@ def get_undecorated_function(func):
                 types.MethodType,
                 types.UnboundMethodType] and \
             f.cell_contents.__name__ == func_name
-    while func.func_closure:
-        candidates = [f.cell_contents for f in
-                      func.func_closure if maybe_wrapped_func(f)]
-        if len(candidates) == 0:
-            break
-        func = candidates[0]
-    return func
+
+    def unpack_func_closure(func):
+        while func.func_closure:
+            candidates = [f.cell_contents for f in
+                          func.func_closure if maybe_wrapped_func(f)]
+            if len(candidates) == 0:
+                break
+            func = candidates[0]
+        return func
+
+    def get_wrapped_func(f):
+        if hasattr(f, '__wrapped__'):
+            # TODO: we may need to keep following this
+            # until we no longer have an f.__wrapped__
+            return f.__wrapped__
+        if hasattr(f, 'func_closure'):
+            return unpack_func_closure(f)
+        return None
+
+    return get_wrapped_func(func)
 
 
 def values_to_dict(values):
@@ -271,7 +297,7 @@ class MicroCLI(object):
         bool_actions = {
             True: 'store_false',
             False: 'store_true'}
-        if type(default_value) in [str, unicode]:
+        if is_string(default_value):
             arg_type = "str"
         elif type(default_value) == bool:
             action = bool_actions[default_value]
@@ -299,7 +325,7 @@ class MicroCLI(object):
         defaults = argspec.defaults or []
         padded_defaults = [None] * (len(arg_names) - len(defaults))
         padded_defaults += list(defaults)
-        args_with_defaults = zip(arg_names, padded_defaults)
+        args_with_defaults = list(zip(arg_names, padded_defaults))
         command_definition = CommandDefinition(
             cmd_name,
             None,  # set parser later
@@ -313,10 +339,10 @@ class MicroCLI(object):
         }
         if type(cmd_options['parser']) == dict:
             parser_kwargs.update(cmd_options['parser'])
-        has_global_options = 0
+        get_has_global_options = lambda: len(self.global_optparser.option_list) > 0
         command_definition.opt_parser = CommandOptionParser(
             command_definition,
-            has_global_options,
+            get_has_global_options,
             **parser_kwargs)
         for arg_name, default_value in args_with_defaults:
             if default_value is not None:
@@ -341,7 +367,7 @@ class MicroCLI(object):
 
     def get_all_command_definitions(self):
         command_definition = {}
-        for cmd_name, cmd_data in self.get_commands().iteritems():
+        for cmd_name, cmd_data in self.get_commands().items():
             cmd_def = self.get_command_definition(cmd_name, *cmd_data)
             command_definition[cmd_name] = cmd_def
         return command_definition
@@ -359,7 +385,6 @@ class MicroCLI(object):
 
     def run(self):
         self.global_optparser.stderr = self.stdout
-        self.global_optparser.has_global_options = len(self.global_optparser.option_list) > 0
         self.arg_list = self.read_global_options()
         command_name = self.arg_list[0] if self.arg_list else self.default_command
         if command_name is None:
@@ -376,7 +401,7 @@ class MicroCLI(object):
                 self.write("Error: %s" % str(e))
                 self.write("%s" % traceback.format_exc())
                 self.exit(1)
-            if type(result) in [str, unicode]:
+            if is_string(result):
                 self.write(result)
             self.exit(result if type(result) == int else 0)
         else:
@@ -447,14 +472,26 @@ class MicroCLITestCase(unittest.TestCase):
         super(MicroCLITestCase, self).__init__(*args, **kwargs)
         # doing import here so these imports are
         # not dependencies for regular use
+        global patch
+        global StringIO
+        patch = None
+        StringIO = None
         try:
-            global patch
-            global StringIO
+            # python 2
             from mock import patch
             from StringIO import StringIO
         except ImportError:
-            sys.stdout.write("Missing dependency for test: mock\n")
-            sys.exit(1)
+            pass
+        try:
+            # python 3
+            from unittest.mock import patch
+            from io import StringIO
+        except ImportError:
+            pass
+        for i in ["patch", "StringIO"]:
+            if globals()[i] is None:
+                sys.stdout.write("Missing dependency for test: %s\n" % i)
+                sys.exit(1)
 
     def setUp(self):
         super(MicroCLITestCase, self).setUp()
@@ -612,7 +649,9 @@ class MicroCLITestCase(unittest.TestCase):
 
     # TODO: test unrecognized command
     # TODO: test default command
-    # TODO: kwarg types reflected in help
+    # TODO: test kwarg types reflected in help
+    # TODO: test error thrown if kwarg command option value has incorrect type
+    # TODO: test global and command options only in usage if they exist
 
 
 def suite():

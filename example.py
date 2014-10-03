@@ -11,7 +11,8 @@ class Calculator(MicroCLI):
             '--output-hex',
             action='store_true',
             default=False,
-            dest='output_hex')
+            dest='output_hex',
+            help='Print result in hexadecimal')
 
     # not all functions are commands, only those
     # decorated with @command()
