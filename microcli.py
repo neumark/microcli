@@ -11,6 +11,7 @@ COMMAND_ATTR = "_command"
 GLOBAL_OPTIONS_STR = "[global options]"
 COMMAND_OPTIONS_STR = "[command options]"
 
+
 class CustomStderrOptionParser(OptionParser):
 
     def __init__(
@@ -72,7 +73,12 @@ class CommandHelpFormatter(CustomHelpFormatter):
 
     options_heading = "Command options"
 
-    def __init__(self, command_definition, get_has_global_options=lambda: True, initial_indent=0, **kwargs):
+    def __init__(
+            self,
+            command_definition,
+            get_has_global_options=lambda: True,
+            initial_indent=0,
+            **kwargs):
         CustomHelpFormatter.__init__(self, **kwargs)
         self.current_indent = initial_indent
         self.command_definition = command_definition
@@ -90,14 +96,13 @@ class CommandHelpFormatter(CustomHelpFormatter):
             self._indent(self.get_command_usage())
 
     def get_command_usage(self):
-        global_options = "[global options] " if self.get_has_global_options() else ""
+        global_options = ""
+        if self.get_has_global_options():
+            global_options = "[global options] "
         program_and_command = "Usage: %s %s%s" % (
             self.command_definition.opt_parser.get_prog_name(),
             global_options,
             self.command_definition.name)
-        if self.command_definition.varargs is None and\
-                len(self.command_definition.arg_names) == 0:
-            return program_and_command
         vararg_list = ""
         if self.command_definition.varargs is not None:
             vararg_template = "[%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]"
@@ -107,7 +112,7 @@ class CommandHelpFormatter(CustomHelpFormatter):
         if len(self.command_definition.opt_parser.option_list) > 0:
             options_str = "%s " % COMMAND_OPTIONS_STR
         return "%(p_and_c)s %(options)s%(args)s%(varargs)s" % {
-            'p_and_c': program_and_command, 
+            'p_and_c': program_and_command,
             'name': self.command_definition.name,
             'args': " ".join(self.command_definition.arg_names),
             'varargs': vararg_list,
@@ -132,9 +137,11 @@ class GlobalOptionParser(CustomStderrOptionParser):
 
     def expand_prog_name(self, s):
         global_options = ""
-        if len(self.option_list) > 0:
+        # > 1 because '-h' is always defined.
+        if len(self.option_list) > 1:
             global_options = "%s " % GLOBAL_OPTIONS_STR
-        return CustomStderrOptionParser.expand_prog_name(self, s) % global_options
+        return CustomStderrOptionParser.expand_prog_name(
+            self, s) % global_options
 
     def print_help(self, file=None):
         """ recursively call all command parsers' helps """
@@ -162,7 +169,6 @@ class CommandOptionParser(CustomStderrOptionParser):
     def _add_help_option(self):
         """Don't add help option"""
         pass
-
 
 
 class CommandDefinition(object):
@@ -219,11 +225,13 @@ def command(parser_options=None):
         return wrapper
     return decorator
 
+
 def is_string(obj):
     try:
         return isinstance(obj, basestring)
     except NameError:
         return isinstance(obj, str)
+
 
 def get_undecorated_function(func):
     func_name = func.__name__
@@ -306,11 +314,10 @@ class MicroCLI(object):
         add_option_kwargs = {
             'action': action,
             'dest': arg_name,
-            'default': default_value
-            }
+            'default': default_value}
         if type(default_value) != bool:
             add_option_kwargs['help'] = 'type: %s (default is %s)' % (
-                    type(default_value).__name__, default_value)
+                type(default_value).__name__, default_value)
         if arg_type is not None:
             add_option_kwargs['type'] = arg_type
         parser.add_option(
@@ -339,7 +346,9 @@ class MicroCLI(object):
         }
         if type(cmd_options['parser']) == dict:
             parser_kwargs.update(cmd_options['parser'])
-        get_has_global_options = lambda: len(self.global_optparser.option_list) > 0
+        # The '-h' global option is always there, hence the > 1
+        get_has_global_options =\
+            lambda: len(self.global_optparser.option_list) > 1
         command_definition.opt_parser = CommandOptionParser(
             command_definition,
             get_has_global_options,
@@ -386,9 +395,13 @@ class MicroCLI(object):
     def run(self):
         self.global_optparser.stderr = self.stdout
         self.arg_list = self.read_global_options()
-        command_name = self.arg_list[0] if self.arg_list else self.default_command
+        command_name = self.default_command
+        if self.arg_list:
+            command_name = self.arg_list[0]
         if command_name is None:
-            self.write("Please specify a command (try the 'help' command for usage info)!")
+            self.write(
+                "Please specify a command (try" +
+                "the 'help' command for usage info)!")
             self.exit(1)
         if command_name in self.command_definitions:
             command_def = self.command_definitions[command_name]
@@ -406,7 +419,7 @@ class MicroCLI(object):
             self.exit(result if type(result) == int else 0)
         else:
             self.write((
-                "Unrecognized command '%s' " +\
+                "Unrecognized command '%s' " +
                 "(try the 'help' command for usage info)!") % command_name)
             self.exit(1)
 
@@ -646,12 +659,56 @@ class MicroCLITestCase(unittest.TestCase):
             cli.run()
             mock_exit.assert_called_with(104)
 
+    def test_options_in_usage(self):
+        """Global or command options should only appear
+           in the usage message if they apply."""
+
+        class NoGlobal(MicroCLI):
+
+            @command()
+            def no_kwargs(self):
+                return MicroCLITestCase.RETVAL
+
+            @command()
+            def has_kwargs(self, some_option=2):
+                return MicroCLITestCase.RETVAL
+
+        class HasGlobal(MicroCLI):
+
+            def __init__(self, *args, **kwargs):
+                super(HasGlobal, self).__init__(*args, **kwargs)
+                self.global_optparser.add_option(
+                    '--some-option',
+                    action='store',
+                    dest="some_option")
+
+            @command()
+            def f1(self):
+                return MicroCLITestCase.RETVAL
+
+        with patch("sys.exit") as mock_exit:
+            no_global = NoGlobal(['-h'])
+            has_global = HasGlobal(['-h'])
+            # Test if [global options] is part of the usage string
+            buf = StringIO()
+            no_global.global_optparser.print_usage(buf)
+            self.assertFalse(GLOBAL_OPTIONS_STR in buf.getvalue())
+            buf = StringIO()
+            has_global.global_optparser.print_usage(buf)
+            self.assertTrue(GLOBAL_OPTIONS_STR in buf.getvalue())
+            self.assertTrue(
+                COMMAND_OPTIONS_STR in
+                no_global.command_definitions['has_kwargs'].
+                opt_parser.formatter.get_command_usage())
+            self.assertFalse(
+                COMMAND_OPTIONS_STR in
+                no_global.command_definitions['no_kwargs'].
+                opt_parser.formatter.get_command_usage())
 
     # TODO: test unrecognized command
     # TODO: test default command
     # TODO: test kwarg types reflected in help
     # TODO: test error thrown if kwarg command option value has incorrect type
-    # TODO: test global and command options only in usage if they exist
 
 
 def suite():

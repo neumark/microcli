@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-from setuptools import setup  # noqa
+from setuptools import setup
 
 setup(name="microcli",
-      version="0.2.2",
+      version="0.2.3",
       description="Extremely lightweight CLI lib for python",
       long_description="Extremely lightweight CLI lib for python",
       author="Peter Neumark",
@@ -21,5 +21,7 @@ setup(name="microcli",
           "Programming Language :: Python :: 2",
           "Programming Language :: Python :: 2.6",
           "Programming Language :: Python :: 2.7",
-          "Programming Language :: Python :: 3"
+          "Programming Language :: Python :: 3",
+          "Programming Language :: Python :: 3.3",
+          "Programming Language :: Python :: 3.4"
           ])
