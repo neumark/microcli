@@ -24,7 +24,7 @@ or -if you want the bleeding edge-
 Example Usage
 ---
 To demonstrate the API on a very simple example, consider
-the following code in a file named ~foobar.py~:
+the following code in a file named foobar.py:
 
 ```python
 
