@@ -1,10 +1,25 @@
 MicroCLI
 ==========
 ![Travis CI status](https://travis-ci.org/neumark/microcli.svg)
+
 *A minimal CLI framework for python*
 MicroCLI provide an easy way to create command line utilities
 which can perform several related actions. [One example](https://github.com/neumark/microcli/blob/master/example.py) is a calculator which can add, subtract and 
 compute logarithms. This is implemented in ```example.py```
+
+Installation
+---
+
+```
+pip install microcli
+```
+
+or -if you want the bleeding edge-
+
+```
+-e git+git@github.com:neumark/microcli.git@master#egg=microcli
+
+```
 
 Example Usage
 ---
