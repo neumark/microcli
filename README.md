@@ -27,18 +27,18 @@ To demonstrate the API on a very simple example, consider
 the following code in a file named foobar.py:
 
 ```python
-
+#!/usr/bin/env python
 from microcli import MicroCLI, command
 
 class FooBarCommand(MicroCLI):
 
     @command()
     def foo(self):
-        print "foo"
+        return "foo"
 
     @command()
     def bar(self, arg1, arg2="four"):
-        print "%s = %s" % (arg1, arg2)
+        return "%s = %s" % (arg1, arg2)
 
 if __name__ == "__main__":
     FooBarCommand.main()
