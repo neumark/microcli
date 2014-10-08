@@ -17,7 +17,7 @@ pip install microcli
 or -if you want the bleeding edge-
 
 ```
--e git+git@github.com:neumark/microcli.git@master#egg=microcli
+pip install -e git+git@github.com:neumark/microcli.git@master#egg=microcli
 
 ```
 
