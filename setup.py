@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(name="microcli",
-      version="0.2.3",
+      version="0.3.0",
       description="Extremely lightweight CLI lib for python",
       long_description="Extremely lightweight CLI lib for python",
       author="Peter Neumark",
