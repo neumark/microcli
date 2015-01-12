@@ -272,7 +272,7 @@ def values_to_dict(values):
 class MicroCLI(object):
 
     def __init__(self, argv=None, stdout=None):
-        self.argv = argv if argv is not None else sys.argv[1:]
+        self.argv = (argv if argv is not None else sys.argv)[1:]
         self.stdout = stdout or sys.stdout
         self.command_definitions = self.get_all_command_definitions()
         self.global_optparser = GlobalOptionParser(
@@ -512,13 +512,13 @@ class MicroCLITestCase(unittest.TestCase):
     def test_command_noargs(self):
         """exit value is what the command returns if its an int"""
         with patch("sys.exit") as mock_exit:
-            self.T.main(["f1"])
+            self.T.main(["script_name", "f1"])
             mock_exit.assert_called_with(MicroCLITestCase.RETVAL)
 
     def test_print_returned_string(self):
         """if the command returns a string it is printed"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T("f2 asdf".split())
+            cli = MicroCLITestCase.T("script_name f2 asdf".split())
             cli.stdout = StringIO()
             cli.run()
             self.assertEquals(cli.stdout.getvalue(), "asdf\n")
@@ -528,7 +528,7 @@ class MicroCLITestCase(unittest.TestCase):
     def test_kwargs_are_optional(self):
         """kwarg values always have defaults"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T("f3".split()).run()
+            cli = MicroCLITestCase.T("script_name f3".split()).run()
             # kwargs are optional
             mock_exit.assert_called_with(4)
 
@@ -536,17 +536,17 @@ class MicroCLITestCase(unittest.TestCase):
         """kwarg values are passed as expected"""
         with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
-                "f3 --awesome-option 1".split()).run()
+                "script_name f3 --awesome-option 1".split()).run()
             mock_exit.assert_called_with(1)
         with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
-                "f3 --awesome-option 1234567".split()).run()
+                "script_name f3 --awesome-option 1234567".split()).run()
             mock_exit.assert_called_with(7)
 
     def test_mixing_args_and_kwargs(self):
         """kwarg values can be mixed with arg values"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T("f4 --kwopt c a b".split())
+            cli = MicroCLITestCase.T("script_name f4 --kwopt c a b".split())
             cli.stdout = StringIO()
             cli.run()
             self.assertEquals(cli.stdout.getvalue(), "a,b,c\n")
@@ -556,7 +556,7 @@ class MicroCLITestCase(unittest.TestCase):
     def test_global_options(self):
         """test the global option parser"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T("--some-option 67 f5".split())
+            cli = MicroCLITestCase.T("script_name --some-option 67 f5".split())
             cli.global_optparser.add_option(
                 '--some-option',
                 action='store',
@@ -568,7 +568,7 @@ class MicroCLITestCase(unittest.TestCase):
         """test the global option parser"""
         with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
-                "--some-option 67 f5 --cmd-specific-arg 13".split())
+                "script_name --some-option 67 f5 --cmd-specific-arg 13".split())
             cli.global_optparser.add_option(
                 '--some-option',
                 action='store',
@@ -580,7 +580,7 @@ class MicroCLITestCase(unittest.TestCase):
         """test what happends when the value of a kwarg is missing"""
         with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(
-                "--some-option 67 f5 --cmd-specific-arg".split())
+                "script_name --some-option 67 f5 --cmd-specific-arg".split())
             cli.global_optparser.add_option(
                 '--some-option',
                 action='store',
@@ -592,14 +592,14 @@ class MicroCLITestCase(unittest.TestCase):
         """test what happends when not enough
            arguments are passed to a function"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T(["f4"])
+            cli = MicroCLITestCase.T(["script_name", "f4"])
             cli.command_definitions["f4"].arg_check(cli, [])
             mock_exit.assert_called_with(1)
 
     def test_varargs(self):
         """varargs are properly passed into the function"""
         with patch("sys.exit") as mock_exit:
-            cli = MicroCLITestCase.T("f6 a b c d e f g h i".split())
+            cli = MicroCLITestCase.T("script_name f6 a b c d e f g h i".split())
             cli.stdout = StringIO()
             cli.run()
             self.assertEquals(cli.stdout.getvalue(), "a,b,7\n")
@@ -610,6 +610,7 @@ class MicroCLITestCase(unittest.TestCase):
         """kwarg values have the type of their default arguments"""
         with patch.object(MicroCLI, "exit") as mock_exit:
             cli = MicroCLITestCase.T([
+                "script_name",
                 "f7",
                 "--int-option", "1",
                 "--float-option", "2.5",
@@ -627,22 +628,23 @@ class MicroCLITestCase(unittest.TestCase):
     def test_help(self):
         """defined commands appear in the help message"""
         with patch.object(MicroCLI, "exit") as mock_exit:
-            cli = MicroCLITestCase.T(["-h"], StringIO())
+            cli = MicroCLITestCase.T(["script_name", "help"], StringIO())
             cli.run()
             output = cli.stdout.getvalue()
+            print output
             self.assertTrue(output.startswith("Usage: "))
             # successful execution exits with code 0
-            mock_exit.assert_called_with(1)
+            mock_exit.assert_called_with(0)
 
     def test_parser_options(self):
         """parser options can be passed as an argument to @command()"""
         with patch("sys.exit") as mock_exit:
-            argv = "f8 -a b --c d e f g h i".split()
+            argv = "script_name f8 -a b --c d e f g h i".split()
             cli = MicroCLITestCase.T(argv, StringIO())
             cli.run()
             self.assertEquals(
                 cli.stdout.getvalue(),
-                "%s\n" % " ".join(argv[1:]))
+                "%s\n" % " ".join(argv[2:]))
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
 
@@ -651,7 +653,7 @@ class MicroCLITestCase(unittest.TestCase):
         with patch.object(MicroCLI, "exit") as mock_exit:
             # --cmd-specific-arg is both a global and a command option.
             cli = MicroCLITestCase.T(
-                "--cmd-specific-arg 51 f5 --cmd-specific-arg 53".split())
+                "script_name --cmd-specific-arg 51 f5 --cmd-specific-arg 53".split())
             cli.global_optparser.add_option(
                 '--cmd-specific-arg',
                 action='store',
@@ -687,8 +689,8 @@ class MicroCLITestCase(unittest.TestCase):
                 return MicroCLITestCase.RETVAL
 
         with patch("sys.exit") as mock_exit:
-            no_global = NoGlobal(['-h'])
-            has_global = HasGlobal(['-h'])
+            no_global = NoGlobal(['script_name', '-h'])
+            has_global = HasGlobal(['script_name', '-h'])
             # Test if [global options] is part of the usage string
             buf = StringIO()
             no_global.global_optparser.print_usage(buf)
