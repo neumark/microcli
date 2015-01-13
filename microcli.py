@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+
+# To run a single test, run eg:
+# python microcli.py MicroCLITestCase.test_varargs
+
 from optparse import (OptionParser, BadOptionError,
                       AmbiguousOptionError, IndentedHelpFormatter)
 import inspect
@@ -10,6 +14,7 @@ import unittest
 COMMAND_ATTR = "_command"
 GLOBAL_OPTIONS_STR = "[global options]"
 COMMAND_OPTIONS_STR = "[command options]"
+ARG_NO_DEFAULT_VALUE = object()
 
 
 class CustomStderrOptionParser(OptionParser):
@@ -105,7 +110,7 @@ class CommandHelpFormatter(CustomHelpFormatter):
             self.command_definition.name)
         vararg_list = ""
         if self.command_definition.varargs is not None:
-            vararg_template = "[%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]"
+            vararg_template = " [%(name)s1 %(name)s2 %(name)s3 ... %(name)sN]"
             vararg_list = vararg_template % {
                 'name': self.command_definition.varargs}
         options_str = ""
@@ -177,18 +182,39 @@ class CommandDefinition(object):
             self,
             name,
             opt_parser,
-            arg_names,
+            args_with_defaults,
             fun,
             varargs=None,
             doc=None):
         self.name = name
         self.opt_parser = opt_parser
-        self.arg_names = arg_names
+        self.args_with_defaults = args_with_defaults
+        self.arg_names = [a for a, d in args_with_defaults if d == ARG_NO_DEFAULT_VALUE]
         self.fun = fun
         self.varargs = varargs
         self.doc = doc
 
-    def arg_check(self, cli, args):
+    def combine_args(self, cli, original_positional_args, kwargs):
+        # Converts kwargs to positional args if the function accepts
+        # varargs (because python 2 can't call functions with both)
+        pos_args = list(original_positional_args)
+        combined_arg_list = []
+        arg_ix = 0
+        for arg_ix in xrange(0, len(self.args_with_defaults)):
+            arg_name, default_value = self.args_with_defaults[arg_ix]
+            # If the argument has a default value then
+            # we should look for it in the kwargs dict
+            if default_value != ARG_NO_DEFAULT_VALUE:
+                arg_value = kwargs.get(arg_name, default_value)
+            else:
+                arg_value = pos_args.pop(0)
+            combined_arg_list.append(arg_value)
+        return combined_arg_list + pos_args
+
+    def verify_function_arity(self, cli, args):
+        # receives the list of command line arguments
+        # along with the dictionary of kwargs
+        # Checks whether the number of arguments is valid
         if self.varargs is not None and (len(args) >= len(self.arg_names)):
             return  # if the function accepts varargs, we're good.
         if len(args) != len(self.arg_names):
@@ -203,14 +229,16 @@ class CommandDefinition(object):
 
     def run(self, cli, args):
         try:
-            kwargs, parsed_args = self.opt_parser.parse_args(args)
+            parser_options, positional_args = self.opt_parser.parse_args(args)
+            kwargs = parser_options.__dict__
         except UnboundLocalError as e:
             cli.write("Error parsing command arguments")
             return 1  # same as sys.exit(1)
         else:
-            self.arg_check(cli, parsed_args)
-            return self.fun(cli, *parsed_args, **values_to_dict(kwargs))
-
+            self.verify_function_arity(cli, positional_args)
+            if self.varargs is None:
+                return self.fun(cli, *positional_args, **kwargs)
+            return self.fun(cli, *self.combine_args(cli, positional_args, kwargs))
 
 def command(parser_options=None):
     options = {
@@ -265,14 +293,10 @@ def get_undecorated_function(func):
     return get_wrapped_func(func)
 
 
-def values_to_dict(values):
-    return values.__dict__
-
-
 class MicroCLI(object):
 
     def __init__(self, argv=None, stdout=None):
-        self.argv = (argv if argv is not None else sys.argv)[1:]
+        self.argv = argv if argv is not None else sys.argv
         self.stdout = stdout or sys.stdout
         self.command_definitions = self.get_all_command_definitions()
         self.global_optparser = GlobalOptionParser(
@@ -290,7 +314,7 @@ class MicroCLI(object):
             self.stdout.write("\n")
 
     def read_global_options(self):
-        global_options, args = self.global_optparser.parse_args(self.argv)
+        global_options, args = self.global_optparser.parse_args(self.argv[1:])
         self.global_options = global_options.__dict__
         return args
 
@@ -330,13 +354,13 @@ class MicroCLI(object):
         # note: the first argument for a command method is self.
         arg_names = argspec.args[1:]
         defaults = argspec.defaults or []
-        padded_defaults = [None] * (len(arg_names) - len(defaults))
+        padded_defaults = [ARG_NO_DEFAULT_VALUE] * (len(arg_names) - len(defaults))
         padded_defaults += list(defaults)
         args_with_defaults = list(zip(arg_names, padded_defaults))
         command_definition = CommandDefinition(
             cmd_name,
             None,  # set parser later
-            [a for a, d in args_with_defaults if d is None],
+            args_with_defaults,
             cmd_fun,
             argspec.varargs,
             self.get_command_description(cmd_fun))
@@ -354,7 +378,7 @@ class MicroCLI(object):
             get_has_global_options,
             **parser_kwargs)
         for arg_name, default_value in args_with_defaults:
-            if default_value is not None:
+            if default_value != ARG_NO_DEFAULT_VALUE:
                 self.add_parser_option(
                     command_definition.opt_parser,
                     arg_name,
@@ -395,12 +419,13 @@ class MicroCLI(object):
     def run(self):
         self.global_optparser.stderr = self.stdout
         self.arg_list = self.read_global_options()
+        self.script_name = self.argv[0]
         command_name = self.default_command
         if self.arg_list:
             command_name = self.arg_list[0]
         if command_name is None:
             self.write(
-                "Please specify a command (try" +
+                "Please specify a command (try " +
                 "the 'help' command for usage info)!")
             self.exit(1)
         if command_name in self.command_definitions:
@@ -480,6 +505,11 @@ class MicroCLITestCase(unittest.TestCase):
         def f8(self, *option):
             """command parsers can treat unknown options as varargs"""
             return " ".join(option)
+
+        @command()
+        def f9(self, arg, switch=2, *vararg):
+            """a command which accepts args, kwargs and varargs"""
+            return "%s,%s,%s" % (len(vararg), switch, arg)
 
     def __init__(self, *args, **kwargs):
         super(MicroCLITestCase, self).__init__(*args, **kwargs)
@@ -593,7 +623,7 @@ class MicroCLITestCase(unittest.TestCase):
            arguments are passed to a function"""
         with patch("sys.exit") as mock_exit:
             cli = MicroCLITestCase.T(["script_name", "f4"])
-            cli.command_definitions["f4"].arg_check(cli, [])
+            cli.command_definitions["f4"].verify_function_arity(cli, [])
             mock_exit.assert_called_with(1)
 
     def test_varargs(self):
@@ -603,6 +633,16 @@ class MicroCLITestCase(unittest.TestCase):
             cli.stdout = StringIO()
             cli.run()
             self.assertEquals(cli.stdout.getvalue(), "a,b,7\n")
+            # successful execution exits with code 0
+            mock_exit.assert_called_with(0)
+
+    def test_varargs_with_kwargs(self):
+        """varargs and kwargs can be used together"""
+        with patch("sys.exit") as mock_exit:
+            cli = MicroCLITestCase.T("script_name f9 --switch 3 arg b c d e f g h i".split())
+            cli.stdout = StringIO()
+            cli.run()
+            self.assertEquals(cli.stdout.getvalue(), "8,3,arg\n")
             # successful execution exits with code 0
             mock_exit.assert_called_with(0)
 
