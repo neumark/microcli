@@ -439,9 +439,11 @@ class MicroCLI(object):
                 self.write("Error: %s" % str(e))
                 self.write("%s" % traceback.format_exc())
                 self.exit(1)
-            if is_string(result):
+            if type(result) == int:
+                self.exit(result)
+            if result is not None:
                 self.write(result)
-            self.exit(result if type(result) == int else 0)
+                self.exit(0)
         else:
             self.write((
                 "Unrecognized command '%s' " +
